@@ -177,3 +177,14 @@ test('/route savings shows totals; reset starts the all-time count again', async
   expect(((await command($, 'savings')) as { text: string }).text).toContain('Saved $0.030 this session and $0.030 in all')
   expect(((await command($, 'savings reset')) as { text: string }).text).toContain('$0.030 this session and $0.00 in all')
 })
+
+const band = { plugin: 'model-router', surface: 'terminal', component: 'AbovePrompt', props: { hasSurvey: false, isCollapsed: false, isWorking: false, maxRows: 4, bodyColumns: 100 } } as const
+
+test('the cache band shows what routing saved this session, once a turn is priced', async ($, on) => {
+  world(on)
+  await start($)
+  await finish($, 't1', { input_tokens: 10_000, output_tokens: 1_000, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, model: 'claude-sonnet-5-5' })
+  const ui = await $.ui.mount(band as never)
+  expect((await ui.find({ type: 'Text', text: /saved \$0\.030 this session/ }))).toBeTruthy()
+  await ui.unmount()
+})

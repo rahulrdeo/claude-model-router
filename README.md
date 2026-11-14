@@ -328,6 +328,8 @@ Every subagent normally runs on the same model as your main chat. With this mod,
 
 Type `/route savings` to open the **Savings** pane.
 
+The cache clock band under the prompt also shows a running line, "saved $X this session" (or "extra $X"), once something has been priced. It needs the cache clock and `savings.enabled` on.
+
 - **What is priced.** When each main-chat answer and each subagent run ends, Claude Code reports its real token counts (input, output, cache reads, cache writes). The mod prices them at list price twice: on the model that actually ran, and on the model that would have run without the router. For the main chat that's your session's model; for a subagent, the model its Agent call named, else its parent's.
 - **Honest about switches.** A model switch makes the new model rebuild the chat's cache, which your own model would simply have read. When that happens, those tokens are priced as cache reads on the "without the router" side, so the switch's cost is charged to the router. A switch back to your model can therefore show as **extra**.
 - **What is taken off.** The router's own calls (the prompt classifier and Haiku's subagent picks) are subtracted from the saving. Handoffs and keep-warm pings are listed as spending you chose, and not subtracted.

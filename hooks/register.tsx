@@ -1820,6 +1820,10 @@ export const register: Register = on => {
     const { Box, Button, Text } = $.ui.resolve(e)
     const now = await read($, clockNow)
     const left = st.expiresAt - now
+    // What routing has saved this session, once something has been priced (/route savings for details).
+    const ses = await read($, savingsSession)
+    const net = netSaved(ses)
+    const savedNote = cfg.savings.enabled && ses.main.count + ses.subagents.count > 0 ? ` · ${net >= 0 ? 'saved' : 'extra'} ${usd(Math.abs(net))} this session` : ''
     if (left <= 0) {
       // A big chat that went cold costs the same to resume as to restart small from a handoff.
       const big = handoffOn() && st.tokens !== undefined && st.tokens >= Math.max(50_000, cfg.handoff.autoAtTokens / 2)
@@ -1829,6 +1833,7 @@ export const register: Register = on => {
             <Text color="warning">Cache cold</Text>
             <Text dimColor>
               {' '}· your next message re-reads {formatTokens(st.tokens)} at full price{st.lastPing ? ` · ${st.lastPing}` : ''}
+              {savedNote}
               {big ? ' · a handoff to a short new chat may cost less' : ''}
             </Text>
           </Text>
@@ -1848,6 +1853,7 @@ export const register: Register = on => {
             {st.keepWarm
               ? `· keeping warm, ping ${st.pings}/${cfg.cacheClock.maxPings}${costs.ping !== null ? ` at ~${usd(costs.ping)} each` : ''}${st.lastPing ? ` · ${st.lastPing}` : ''}`
               : `· then your next message costs full price (${formatTokens(st.tokens)})${costs.ping !== null && costs.cold !== null ? ` · a ping ~${usd(costs.ping)}, going cold ~${usd(costs.cold)}` : ''}${st.lastPing ? ` · keep warm ${st.lastPing}` : ''}`}
+            {savedNote}
           </Text>
         </Text>
         {st.keepWarm ? (
