@@ -1,0 +1,21 @@
+# Written by Claude Code when it loads the mod
+.claude-plugin/types/
+.mcpb-cache/
+
+# Logs
+*.log
+*.log.1
+
+# Packaging output
+*.zip
+*.plugin
+dist/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+desktop.ini
+*~
+*.swp
+.idea/
+.vscode/
