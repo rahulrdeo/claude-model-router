@@ -1,7 +1,7 @@
 {
   "name": "model-router",
-  "version": "2.3.2",
-  "description": "Picks Haiku, Sonnet or Opus and an effort level for each prompt: auto, recommend or manual.",
+  "version": "2.6.0",
+  "description": "Picks Haiku, Sonnet or Opus and an effort level for each prompt and each subagent, writes handoffs for long chats, shows a cache clock, and shows what it saves.",
   "author": {
     "name": "model-router contributors"
   },
