@@ -1,6 +1,6 @@
 {
   "name": "model-router",
-  "version": "2.8.0",
+  "version": "2.9.0",
   "description": "Picks Haiku, Sonnet or Opus and an effort level for each prompt and each subagent, writes handoffs for long chats, shows a cache clock, and shows what it saves.",
   "author": {
     "name": "model-router contributors"
