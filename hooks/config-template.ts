@@ -286,11 +286,15 @@ export const CONFIG_TEMPLATE = `// Model router configuration.
     "ttlMinutes": 0,
     // Ping this many seconds before the cache would go cold (5-600).
     "pingLeadSeconds": 30,
-    // Most pings per pause, so a forgotten chat does not ping forever (each ping re-reads the
-    // cached chat at the cache-read price).
-    "maxPings": 6,
+    // Most pings per pause. Each ping re-reads the whole cached chat (about a tenth of the full
+    // price per token) and thinks at the session's effort, and is wasted if you don't come back.
+    // 2 pings keep a 5-minute cache warm for about 10 more minutes.
+    "maxPings": 2,
     // Keep warm also stops this many minutes after you switched it on (1-1440).
-    "maxMinutes": 90
+    "maxMinutes": 90,
+    // Keep warm starts by itself after a reply only when the chat is at least this many tokens;
+    // below that, a cold restart is cheap. Clicking Keep warm starts it at any size.
+    "autoStartMinTokens": 50000
   },
 
   // Escalation after a failure: an API error or refusal, a test/build run that was still

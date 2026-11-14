@@ -148,6 +148,19 @@ export function usd(n: number): string {
   return `${sign}$${a.toFixed(digits)}`
 }
 
+/**
+ * What keeping a chat of `tokens` warm costs per ping (a cache read of the whole chat, before
+ * any thinking), and what letting it go cold costs (writing the whole chat to the cache again).
+ * Null where the model or the size is unknown.
+ */
+export function keepWarmCosts(tokens: number | undefined, model: string | undefined, prices: Record<Family, Price>): { ping: number | null; cold: number | null } {
+  if (tokens === undefined) return { ping: null, cold: null }
+  return {
+    ping: priceOf({ cache_read_input_tokens: tokens }, model, prices),
+    cold: priceOf({ cache_creation_input_tokens: tokens }, model, prices),
+  }
+}
+
 /** Reads `savings.prices` from a config: any family left out or invalid keeps the default. */
 export function mergePrices(user: unknown, warnings: string[]): Record<Family, Price> {
   const out: Record<Family, Price> = JSON.parse(JSON.stringify(DEFAULT_PRICES))

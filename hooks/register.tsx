@@ -16,7 +16,7 @@ import type { EngineInterface, Register, Timer } from 'claude-code'
 
 import type { AgentPickRow, CacheClockState, HandoffState, RouterSession, SavingsItem, SavingsTotals } from '../types'
 import { CONFIG_TEMPLATE } from './config-template'
-import { addItem, emptyTotals, familyOf, insteadOfTokens, netSaved, priceOf, savedShare, usd, type CostItem, type Tokens } from './savings-core'
+import { addItem, emptyTotals, familyOf, insteadOfTokens, keepWarmCosts, netSaved, priceOf, savedShare, usd, type CostItem, type Tokens } from './savings-core'
 import {
   AGENT_PICK_SYSTEM,
   agentPickPrompt,
@@ -41,6 +41,7 @@ import {
   KEEP_WARM_PROMPT,
   nextPingAt,
   parseAgentPick,
+  shouldAutoWarm,
   pct,
   type AgentPick,
 } from './extras-core'
@@ -197,6 +198,8 @@ let tickTimer: Timer | null = null
 let pingTimer: Timer | null = null
 /** True while a keep-warm ping runs, so its own events do not reset the clock. */
 let pinging = false
+/** When the person last typed in this session (ms); 0 until they do. */
+let lastPromptAt = 0
 let agentPaneOpened = false
 
 /** The best evidence of the cache lifetime: proven this session, asked for, proven before. */
@@ -320,7 +323,12 @@ async function recordCost($: EngineInterface, item: CostItem): Promise<void> {
 /** Records a helper call's tokens (classifier, subagent pick, handoff, keep-warm) as spending. */
 function recordCall($: EngineInterface, what: 'classifier' | 'picks' | 'handoff' | 'keepWarm', model: string, tokens: Tokens | null | undefined, label: string): Promise<void> {
   const cost = priceOf(tokens, model, cfg.savings.prices)
-  if (cost === null) return Promise.resolve()
+  if (cost === null) {
+    // Keep-warm pings are always recorded, so their spending is never invisible.
+    if (what !== 'keepWarm') return Promise.resolve()
+    const read = tokens?.cache_read_input_tokens
+    return $.clock.now().then(at => recordCost($, { at, kind: 'overhead', what, usd: 0, label: `${label} (no price for ${model}${read ? `; ${formatTokens(read)} read` : ''})` }))
+  }
   return $.clock.now().then(at => recordCost($, { at, kind: 'overhead', what, usd: cost, label }))
 }
 
@@ -842,6 +850,56 @@ function isTotals(v: unknown): v is SavingsTotals {
   return !!t && typeof t === 'object' && typeof t.since === 'number' && typeof t.main?.usd === 'number' && typeof t.subagents?.usd === 'number' && typeof t.overhead?.classifier === 'number'
 }
 
+const activePath = () => joinPath(dir, 'active.json')
+const warmPrefPath = () => joinPath(dir, 'keepwarm.json')
+
+/** Records that the person just typed here, so the other sessions can see they have moved on. */
+async function markActive($: EngineInterface, now: number): Promise<void> {
+  lastPromptAt = now
+  if (!dir) return
+  try {
+    await $.fs.write(activePath(), JSON.stringify({ session: await $.session.id(), at: now }))
+  } catch (err) {
+    debug($, `could not record activity: ${errText(err)}`)
+  }
+}
+
+/** Whether the person has typed in another session since they last typed in this one. */
+async function movedOn($: EngineInterface): Promise<boolean> {
+  if (!dir) return false
+  try {
+    const path = activePath()
+    if (!(await $.fs.exists(path))) return false
+    const v = JSON.parse(await $.fs.read(path)) as { session?: unknown; at?: unknown }
+    if (typeof v.session !== 'string' || typeof v.at !== 'number') return false
+    return v.session !== (await $.session.id()) && v.at > lastPromptAt
+  } catch {
+    // Cannot tell (a file being written, an old format): carry on as before.
+    return false
+  }
+}
+
+/** Keep warm is one setting for all sessions: it follows the session the person is typing in. */
+async function warmWanted($: EngineInterface): Promise<boolean> {
+  if (!dir) return false
+  try {
+    const path = warmPrefPath()
+    if (!(await $.fs.exists(path))) return false
+    return (JSON.parse(await $.fs.read(path)) as { on?: unknown }).on === true
+  } catch {
+    return false
+  }
+}
+
+async function setWarmWanted($: EngineInterface, on: boolean): Promise<void> {
+  if (!dir) return
+  try {
+    await $.fs.write(warmPrefPath(), JSON.stringify({ on, at: await $.clock.now() }))
+  } catch (err) {
+    debug($, `could not save the Keep warm setting: ${errText(err)}`)
+  }
+}
+
 function cancelTimers(): void {
   tickTimer?.cancel()
   tickTimer = null
@@ -896,6 +954,17 @@ async function ping($: EngineInterface): Promise<void> {
   // The time limit is checked again here: it may have passed while this ping waited.
   if (st.warmSince !== undefined && (await $.clock.now()) - st.warmSince >= cfg.cacheClock.maxMinutes * 60_000) {
     await update($, cacheClock, (p): CacheClockState => ({ ...p, keepWarm: false, lastPing: `stopped after ${cfg.cacheClock.maxMinutes} min (cacheClock.maxMinutes)` }))
+    return
+  }
+  // Checked right before spending: no ping goes to a session the person has left.
+  if (await movedOn($)) {
+    await update($, cacheClock, (p): CacheClockState => ({ ...p, keepWarm: false, lastPing: 'stopped: you moved to another session' }))
+    await writeLog($, { event: 'keep-warm', ok: false, reason: 'moved-on' })
+    return
+  }
+  if (!(await warmWanted($))) {
+    await update($, cacheClock, (p): CacheClockState => ({ ...p, keepWarm: false, lastPing: 'stopped: Keep warm was switched off' }))
+    await writeLog($, { event: 'keep-warm', ok: false, reason: 'switched-off' })
     return
   }
   pinging = true
@@ -959,6 +1028,7 @@ export const register: Register = on => {
   tickTimer = null
   pingTimer = null
   pinging = false
+  lastPromptAt = 0
   agentPaneOpened = false
 
   on('session.start', async ($, e, next) => {
@@ -1050,6 +1120,8 @@ export const register: Register = on => {
     }
     try {
       await loadConfig($)
+      // The person is here: other sessions' Keep warm sees it and stops.
+      await markActive($, await $.clock.now())
       // A model picked in the app or with /model since the last prompt: the person's choice wins.
       const sessionModel = await $.session.model().catch(() => '')
       if (baseModel && sessionModel && isOtherModel(sessionModel, baseModel, cfg)) await notePersonPick($, { model: sessionModel })
@@ -1233,9 +1305,15 @@ export const register: Register = on => {
         const ttlMs = cacheTtlMs(cfg, ttlEvidenceNow())
         const tokens = (await $.session.usage().catch(() => null))?.context.tokens
         cancelTimers()
-        await update($, cacheClock, (): CacheClockState => ({ expiresAt: now + ttlMs, ttlMs, tokens, keepWarm: false, pings: 0 }))
+        // Keep warm follows the person: on in the session they are using, never in one they left.
+        const settingOn = await warmWanted($)
+        const bigEnough = shouldAutoWarm(tokens, cfg)
+        const wantWarm = settingOn && bigEnough && !(await movedOn($))
+        const note = settingOn && !bigEnough ? `not started: chat under ${formatTokens(cfg.cacheClock.autoStartMinTokens)}` : undefined
+        await update($, cacheClock, (): CacheClockState => ({ expiresAt: now + ttlMs, ttlMs, tokens, keepWarm: wantWarm, warmSince: wantWarm ? now : undefined, pings: 0, lastPing: note }))
         await update($, clockNow, () => now)
         startTicking($)
+        if (wantWarm) await schedulePing($)
       }
     } catch (err) {
       debug($, `cache clock failed: ${errText(err)}`)
@@ -1381,6 +1459,30 @@ export const register: Register = on => {
           }
           return { text: `Cache clock ${clockOn() ? 'on' : 'off'}. Cache lifetime: ${cfg.cacheClock.ttlMinutes > 0 ? `${cfg.cacheClock.ttlMinutes} min (config)` : `${ttlEvidenceNow() === '1h' ? 60 : 5} min (detected)`}.` }
         }
+        case 'warm': {
+          if (cmd.enabled === true) {
+            await setWarmWanted($, true)
+            // Typing this command means the person is here: other sessions stop warming.
+            const now = await $.clock.now()
+            await markActive($, now)
+            const st = await read($, cacheClock)
+            if (clockOn() && st.expiresAt !== null && now < st.expiresAt && !st.keepWarm) {
+              await update($, cacheClock, (p): CacheClockState => ({ ...p, keepWarm: true, warmSince: now, lastPing: undefined }))
+              await schedulePing($)
+            }
+          } else if (cmd.enabled === false) {
+            await setWarmWanted($, false)
+            pingTimer?.cancel()
+            pingTimer = null
+            await update($, cacheClock, (p): CacheClockState => ({ ...p, keepWarm: false }))
+          }
+          const on_ = await warmWanted($)
+          return {
+            text: on_
+              ? `Keep warm on. It follows you: it runs in the session you type in (after each reply, up to ${cfg.cacheClock.maxPings} pings or ${cfg.cacheClock.maxMinutes} min) and stops in any session you have left.${clockOn() ? '' : ' The cache clock is off, so nothing runs until you turn it on (/route clock on).'}`
+              : 'Keep warm off. No session pings the cache.',
+          }
+        }
         case 'status': {
           await loadConfig($)
           const s = normalize(await read($, session))
@@ -1401,6 +1503,7 @@ export const register: Register = on => {
             `Subagents:   ${agentsOn() ? `routed by Haiku${cfg.subagents.riskyToOpus ? `, risky tasks (${pct(cfg.subagents.riskyAt)}+) to Opus` : ''} (/route agents shows the pane)` : 'off'}`,
             `Saved:       ${cfg.savings.enabled ? `${usd(netSaved(await read($, savingsSession)))} this session, ${usd(netSaved(await read($, savingsAll)))} in all (/route savings)` : 'not tracked'}`,
             `Handoff:     ${handoffOn() ? `automatic at ${formatTokens(cfg.handoff.autoAtTokens)}` : 'automatic off'}; /handoff any time`,
+            `Keep warm:   ${(await warmWanted($)) ? 'on, follows the session you type in' : 'off'}`,
             `Cache clock: ${clockOn() ? `on (${cfg.cacheClock.ttlMinutes > 0 ? cfg.cacheClock.ttlMinutes : ttlEvidenceNow() === '1h' ? 60 : 5} min cache)` : 'off'}`,
             cfgWarnings.length ? `Warnings:\n- ${cfgWarnings.join('\n- ')}` : '',
             '',
@@ -1734,6 +1837,8 @@ export const register: Register = on => {
       )
     }
     const color = left < 60_000 ? 'warning' : 'success'
+    // Before any thinking: a ping re-reads the cached chat; going cold writes it all again.
+    const costs = keepWarmCosts(st.tokens, lastAnswerModel || baseModel, cfg.savings.prices)
     return (
       <Box flexDirection="row" gap={1}>
         <Text>
@@ -1741,8 +1846,8 @@ export const register: Register = on => {
           <Text dimColor>
             {' '}
             {st.keepWarm
-              ? `· keeping warm, ping ${st.pings}/${cfg.cacheClock.maxPings}${st.lastPing ? ` · ${st.lastPing}` : ''}`
-              : `· then your next message costs full price (${formatTokens(st.tokens)})${st.lastPing ? ` · keep warm ${st.lastPing}` : ''}`}
+              ? `· keeping warm, ping ${st.pings}/${cfg.cacheClock.maxPings}${costs.ping !== null ? ` at ~${usd(costs.ping)} each` : ''}${st.lastPing ? ` · ${st.lastPing}` : ''}`
+              : `· then your next message costs full price (${formatTokens(st.tokens)})${costs.ping !== null && costs.cold !== null ? ` · a ping ~${usd(costs.ping)}, going cold ~${usd(costs.cold)}` : ''}${st.lastPing ? ` · keep warm ${st.lastPing}` : ''}`}
           </Text>
         </Text>
         {st.keepWarm ? (
@@ -1752,6 +1857,7 @@ export const register: Register = on => {
             onPress={async () => {
               pingTimer?.cancel()
               pingTimer = null
+              await setWarmWanted($, false)
               await update($, cacheClock, (p): CacheClockState => ({ ...p, keepWarm: false }))
             }}
           />
@@ -1761,6 +1867,8 @@ export const register: Register = on => {
             label="Keep warm"
             onPress={async () => {
               const since = await $.clock.now()
+              await setWarmWanted($, true)
+              await markActive($, since)
               await update($, cacheClock, (p): CacheClockState => ({ ...p, keepWarm: true, warmSince: since, lastPing: undefined }))
               await schedulePing($)
             }}

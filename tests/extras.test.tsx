@@ -15,12 +15,14 @@ import {
   nativeHome,
   newChatLink,
   nextPingAt,
+  shouldAutoWarm,
   openLinkCommands,
   parseAgentPick,
   redactSecrets,
   ttlEvidence,
 } from '../hooks/extras-core'
 import { DEFAULT_CONFIG, mergeConfig, parseRouteCommand } from '../hooks/router-core'
+import { keepWarmCosts } from '../hooks/savings-core'
 
 const cfg = DEFAULT_CONFIG
 
@@ -179,7 +181,7 @@ describe('handoff extras', () => {
 const HOME = '/home/tester'
 type World = { files: Map<string, string>; toasts: string[]; completes: { model: string; system?: string; prompt?: string }[]; forks: number; opened: string[]; compacted: { instructions?: string }[]; appended: string[]; runs: string[][]; stepUsage?: Record<string, number> }
 
-function world(on: On, o: { pick?: string; handoff?: string; tokens?: number; fork?: { cached: number }; env?: Record<string, string>; messages?: unknown[]; config?: string; runExit?: number } = {}) {
+function world(on: On, o: { model?: string; pick?: string; handoff?: string; tokens?: number; fork?: { cached: number }; env?: Record<string, string>; messages?: unknown[]; config?: string; runExit?: number } = {}) {
   const w: World = { files: new Map(), toasts: [], completes: [], forks: 0, opened: [], compacted: [], appended: [], runs: [] }
   if (o.config) w.files.set(`${HOME}/.claude/model-router/config.jsonc`, o.config)
   mock.store(on)
@@ -195,7 +197,7 @@ function world(on: On, o: { pick?: string; handoff?: string; tokens?: number; fo
     return result
   })
   const clock = mock.clock(on, { now: 1_700_000_000_000 })
-  on('session.model', () => ({ value: 'claude-opus-5-5' }))
+  on('session.model', () => ({ value: o.model ?? 'claude-opus-5-5' }))
   on('session.turns', () => ({ value: 5 }))
   on('session.id', () => ({ value: 's1' }))
   on('session.cwd', () => ({ value: HOME }))
@@ -220,6 +222,7 @@ function world(on: On, o: { pick?: string; handoff?: string; tokens?: number; fo
   on('fs.read', (_, e) => ({ value: w.files.get(e.path) ?? '' }))
   on('fs.stat', (_, e) => ({ value: { kind: 'file', size: (w.files.get(e.path) ?? '').length, mtimeMs: 1, isLink: false } }))
   on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('prompt.submit', (_, e) => ({ text: e.text }))
   on('turn.start', (_, e) => ({ turnId: e.turnId }))
   on('turn.complete', (_, e) => ({ text: e.answer }))
   on('model.complete', (_, e) => {
@@ -460,4 +463,197 @@ test('a big chat that went cold offers a handoff', async ($, on) => {
   const ui = await $.ui.mount(band as never)
   expect((await ui.find({ type: 'Text', text: /may cost less/ }))).toBeTruthy()
   await ui.unmount()
+})
+
+// ---------------------------------------------------------------------------
+// Keep warm follows the session the person is typing in.
+
+const WARM = `${HOME}/.claude/model-router/keepwarm.json`
+const ACTIVE = `${HOME}/.claude/model-router/active.json`
+const type = ($: Engine) => $.prompt.submit({ text: 'hello', wait: false, origin: { kind: 'composer' } } as never)
+const pressKeepWarm = async ($: Engine) => {
+  const ui = await $.ui.mount(band as never)
+  await ui.press({ key: 'keep-warm' } as never)
+  await ui.unmount()
+}
+const bandText = async ($: Engine, re: RegExp) => {
+  const ui = await $.ui.mount(band as never)
+  const found = await ui.find({ type: 'Text', text: re })
+  await ui.unmount()
+  return found
+}
+
+test('parse: /route warm', () => {
+  expect(parseRouteCommand('warm')).toEqual({ kind: 'warm' })
+  expect(parseRouteCommand('warm on')).toEqual({ kind: 'warm', enabled: true })
+  expect(parseRouteCommand('keepwarm off')).toEqual({ kind: 'warm', enabled: false })
+  expect(parseRouteCommand('warm maybe').kind).toBe('error')
+})
+
+test('Keep warm is one setting: after pressing it once, the next reply starts it without pressing again', async ($, on) => {
+  const { w, clock } = world(on, { tokens: 120_000 })
+  await start($)
+  await endTurn($, 't1')
+  await pressKeepWarm($)
+  expect(w.files.get(WARM)).toContain('"on":true')
+  await endTurn($, 't2')
+  await clock.advance(270_000)
+  expect(w.forks).toBe(1)
+})
+
+test('a new session starts Keep warm by itself after its first reply when the setting is on', async ($, on) => {
+  const { w, clock } = world(on, { tokens: 120_000 })
+  w.files.set(WARM, '{"on":true}')
+  await start($)
+  await type($)
+  await endTurn($)
+  await clock.advance(270_000)
+  expect(w.forks).toBe(1)
+})
+
+test('typing records that this session is the one in use', async ($, on) => {
+  const { w } = world(on)
+  await start($)
+  await type($)
+  expect(JSON.parse(w.files.get(ACTIVE) ?? '{}')).toMatchObject({ session: 's1' })
+})
+
+test('a session you have left stops before pinging: no ping is sent to an idle chat', async ($, on) => {
+  const { w, clock } = world(on, { tokens: 120_000 })
+  await start($)
+  await type($)
+  await endTurn($)
+  await pressKeepWarm($)
+  // Later the person types in another session.
+  w.files.set(ACTIVE, JSON.stringify({ session: 's2', at: clock.now() + 60_000 }))
+  await clock.advance(270_000)
+  expect(w.forks).toBe(0)
+  expect(await bandText($, /moved to another session/)).toBeTruthy()
+})
+
+test('older activity in another session does not stop the session you are typing in', async ($, on) => {
+  const { w, clock } = world(on, { tokens: 120_000 })
+  w.files.set(ACTIVE, JSON.stringify({ session: 's2', at: clock.now() - 60_000 }))
+  await start($)
+  await type($)
+  await endTurn($)
+  await pressKeepWarm($)
+  await clock.advance(270_000)
+  expect(w.forks).toBe(1)
+})
+
+test('Keep warm does not start after a reply in a session you have already left', async ($, on) => {
+  const { w, clock } = world(on, { tokens: 120_000 })
+  w.files.set(WARM, '{"on":true}')
+  await start($)
+  await type($)
+  w.files.set(ACTIVE, JSON.stringify({ session: 's2', at: clock.now() + 1_000 }))
+  await endTurn($)
+  await clock.advance(270_000)
+  expect(w.forks).toBe(0)
+  expect(await bandText($, /costs full price/)).toBeTruthy()
+})
+
+test('switching Keep warm off stops it in every session', async ($, on) => {
+  const { w, clock } = world(on, { tokens: 120_000 })
+  w.files.set(WARM, '{"on":true}')
+  await start($)
+  await type($)
+  await endTurn($)
+  w.files.set(WARM, '{"on":false}')
+  await clock.advance(270_000)
+  expect(w.forks).toBe(0)
+  expect(await bandText($, /switched off/)).toBeTruthy()
+})
+
+test('/route warm on and off', async ($, on) => {
+  const { w, clock } = world(on, { tokens: 120_000 })
+  await start($)
+  await endTurn($)
+  const onText = ((await command($, 'route', 'warm on')) as { text: string }).text
+  expect(onText).toContain('Keep warm on')
+  expect(onText).toContain('follows you')
+  expect(w.files.get(WARM)).toContain('"on":true')
+  // The cache was warm, so it starts at once.
+  await clock.advance(270_000)
+  expect(w.forks).toBe(1)
+  const offText = ((await command($, 'route', 'warm off')) as { text: string }).text
+  expect(offText).toContain('Keep warm off')
+  expect(w.files.get(WARM)).toContain('"on":false')
+  await clock.advance(270_000)
+  expect(w.forks).toBe(1)
+  expect(((await command($, 'route', 'status')) as { text: string }).text).toContain('Keep warm:   off')
+})
+
+// ---------------------------------------------------------------------------
+// Keep warm budget and costs
+
+test('keep-warm costs: a ping reads the cached chat, going cold writes it all again', () => {
+  const c = keepWarmCosts(200_000, 'claude-opus-5-5', cfg.savings.prices)
+  expect(c.ping).toBeGreaterThan(0)
+  expect(c.cold).toBeGreaterThan(c.ping ?? 0)
+  expect(keepWarmCosts(undefined, 'claude-opus-5-5', cfg.savings.prices)).toEqual({ ping: null, cold: null })
+  expect(keepWarmCosts(200_000, 'mystery-model', cfg.savings.prices)).toEqual({ ping: null, cold: null })
+})
+
+test('Keep warm starts by itself only for chats of at least autoStartMinTokens', () => {
+  expect(cfg.cacheClock.autoStartMinTokens).toBe(50_000)
+  expect(shouldAutoWarm(49_999, cfg)).toBe(false)
+  expect(shouldAutoWarm(50_000, cfg)).toBe(true)
+  expect(shouldAutoWarm(undefined, cfg)).toBe(false)
+})
+
+test('a small chat does not start Keep warm by itself, and says why', async ($, on) => {
+  const { w, clock } = world(on, { tokens: 10_000 })
+  w.files.set(WARM, '{"on":true}')
+  await start($)
+  await type($)
+  await endTurn($)
+  await clock.advance(270_000)
+  expect(w.forks).toBe(0)
+  expect(await bandText($, /not started: chat under 50k tokens/)).toBeTruthy()
+})
+
+test('Keep warm sends at most 2 pings per pause by default', async ($, on) => {
+  const { w, clock } = world(on, { tokens: 120_000 })
+  w.files.set(WARM, '{"on":true}')
+  await start($)
+  await type($)
+  await endTurn($)
+  await clock.advance(270_000)
+  expect(w.forks).toBe(1)
+  await clock.advance(300_000)
+  expect(w.forks).toBe(2)
+  await clock.advance(600_000)
+  expect(w.forks).toBe(2)
+})
+
+test('the band shows what a ping and going cold cost', async ($, on) => {
+  const { w } = world(on, { tokens: 120_000 })
+  await start($)
+  await endTurn($)
+  const idle = await bandText($, /a ping ~\$/)
+  expect(idle?.text).toContain('going cold ~$')
+  await pressKeepWarm($)
+  expect(await bandText($, /keeping warm, ping 0\/2 at ~\$/)).toBeTruthy()
+  expect(w.forks).toBe(0)
+})
+
+test('a ping with no known price is still recorded in the cost ledger', async ($, on) => {
+  const { w, clock } = world(on, { tokens: 120_000, model: 'mystery-model' })
+  w.files.set(WARM, '{"on":true}')
+  await start($)
+  // Routing off: the turn, and so the ping, run on the session's own (unpriced) model.
+  await command($, 'route', 'off')
+  await type($)
+  await $.turn.start({ text: 'hi', turnId: 'tm' } as never)
+  for await (const _ of $.turn.step({ turnId: 'tm', index: 0, model: 'mystery-model', messageCount: 1 } as never)) {
+    // drain
+  }
+  await $.turn.complete({ answer: 'ok', durationMs: 1, isAborted: false, turnId: 'tm', reason: 'answer' } as never)
+  await clock.advance(270_000)
+  expect(w.forks).toBe(1)
+  const ledger = [...w.files.entries()].find(([k]) => k.endsWith('cost-ledger.jsonl'))?.[1] ?? ''
+  expect(ledger).toContain('"what":"keepWarm"')
+  expect(ledger).toContain('no price for')
 })

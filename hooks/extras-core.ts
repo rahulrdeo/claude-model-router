@@ -258,6 +258,11 @@ export function nextPingAt(expiresAt: number, pings: number, cfg: RouterConfig):
   return expiresAt - cfg.cacheClock.pingLeadSeconds * 1000
 }
 
+/** Whether Keep warm should start by itself after a reply: only for chats big enough to matter. */
+export function shouldAutoWarm(tokens: number | undefined, cfg: RouterConfig): boolean {
+  return tokens !== undefined && tokens >= cfg.cacheClock.autoStartMinTokens
+}
+
 export const KEEP_WARM_PROMPT =
   'Cache keep-alive ping from the model-router mod. You have no tools. Reply with the single word OK and nothing else, straight away, without thinking it over.'
 

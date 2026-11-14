@@ -154,6 +154,8 @@ export type RouterConfig = {
     pingLeadSeconds: number
     /** Most pings per idle stretch, so a forgotten chat does not ping forever. */
     maxPings: number
+    /** Keep warm starts by itself only when the chat is at least this many tokens. */
+    autoStartMinTokens: number
     /** Keep warm also stops this many minutes after it was switched on. */
     maxMinutes: number
   }
@@ -201,7 +203,7 @@ export const DEFAULT_CONFIG: RouterConfig = {
     maxInputChars: 600000,
     saveToFile: true,
   },
-  cacheClock: { enabled: true, ttlMinutes: 0, pingLeadSeconds: 30, maxPings: 6, maxMinutes: 90 },
+  cacheClock: { enabled: true, ttlMinutes: 0, pingLeadSeconds: 30, maxPings: 2, maxMinutes: 90, autoStartMinTokens: 50_000 },
   defaultMode: 'recommend',
   defaultLockModel: 'sonnet',
   models: { haiku: 'haiku', sonnet: 'sonnet', opus: 'opus' },
@@ -603,6 +605,7 @@ export function mergeConfig(user: unknown): { config: RouterConfig; warnings: st
     c.ttlMinutes = num(k.ttlMinutes, 'cacheClock.ttlMinutes', 0, 1440) ?? c.ttlMinutes
     c.pingLeadSeconds = num(k.pingLeadSeconds, 'cacheClock.pingLeadSeconds', 5, 600) ?? c.pingLeadSeconds
     c.maxPings = num(k.maxPings, 'cacheClock.maxPings', 0, 100) ?? c.maxPings
+    c.autoStartMinTokens = num(k.autoStartMinTokens, 'cacheClock.autoStartMinTokens', 0, 10_000_000) ?? c.autoStartMinTokens
     c.maxMinutes = num(k.maxMinutes, 'cacheClock.maxMinutes', 1, 1440) ?? c.maxMinutes
   } else if (user.cacheClock !== undefined) warnings.push('cacheClock must be an object; using default')
   if (isObj(user.escalation)) {
@@ -982,6 +985,7 @@ export type RouteCommand =
   | { kind: 'reload' }
   | { kind: 'log'; enabled: boolean }
   | { kind: 'feature'; feature: 'agents' | 'handoff' | 'clock'; enabled?: boolean }
+  | { kind: 'warm'; enabled?: boolean }
   | { kind: 'resume' }
   | { kind: 'savings'; reset?: boolean }
   | { kind: 'help' }
@@ -1054,6 +1058,12 @@ export function parseRouteCommand(args: string, cfg: RouterConfig = DEFAULT_CONF
       if (arg === 'on' || arg === 'off') return { kind: 'feature', feature, enabled: arg === 'on' }
       return { kind: 'error', message: `Use /route ${head} on, /route ${head} off, or /route ${head} to show it.` }
     }
+    case 'warm':
+    case 'keepwarm': {
+      if (arg === undefined || arg === 'show' || arg === 'status') return { kind: 'warm' }
+      if (arg === 'on' || arg === 'off') return { kind: 'warm', enabled: arg === 'on' }
+      return { kind: 'error', message: `Use /route ${head} on, /route ${head} off, or /route ${head} to show it.` }
+    }
     case 'help':
       return { kind: 'help' }
     default:
@@ -1080,6 +1090,7 @@ export const HELP_TEXT = [
   '  /route agents [on|off]       subagent model router: show its pane, or turn it on/off',
   '  /route handoff [on|off]      automatic handoff for long chats; /handoff writes one now',
   '  /route clock [on|off]        cache clock: countdown to when the chat cache goes cold',
+  '  /route warm [on|off]         Keep warm: follows the session you type in, stops in ones you left',
   '  /route savings [reset]       what the router saved, this session and all time'
 ].join('\n')
 
