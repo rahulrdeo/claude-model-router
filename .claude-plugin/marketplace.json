@@ -1,0 +1,17 @@
+{
+  "name": "model-router",
+  "owner": {
+    "name": "model-router contributors"
+  },
+  "description": "Marketplace for the model-router Claude Code mod.",
+  "plugins": [
+    {
+      "name": "model-router",
+      "source": "./",
+      "description": "Picks Haiku, Sonnet or Opus and an effort level for each prompt: auto, recommend or manual.",
+      "version": "2.3.2",
+      "license": "MIT",
+      "category": "productivity"
+    }
+  ]
+}
