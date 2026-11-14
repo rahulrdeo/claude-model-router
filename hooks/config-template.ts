@@ -135,7 +135,7 @@ export const CONFIG_TEMPLATE = `// Model router configuration.
     // Write each routing decision to routing.log (JSON lines) next to this file.
     // "/route log on|off" overrides this and is remembered.
     "enabled": false,
-    // Rotate to routing.log.1 past this size.
+    // Rotate to routing.log.1 past this size (10000-4000000: Claude Code reads files up to 4 MB).
     "maxBytes": 1000000,
     // Also log the first 80 characters of each prompt. Off for privacy.
     "includePromptExcerpt": false
@@ -213,6 +213,84 @@ export const CONFIG_TEMPLATE = `// Model router configuration.
       "complex":      { "min": 48, "max": 74 },
       "architecture": { "min": 65, "max": 74 }
     }
+  },
+
+  // Subagent model router. Before each subagent starts, the classifier model (Haiku, see
+  // "classifier") reads its task and picks a model: a simple lookup goes to Haiku, a
+  // well-defined job to Sonnet, a hard job stays on Opus. The subagent's task text is sent to
+  // that model. The pane "Subagent models" (/route agents) shows each pick and its confidence.
+  // Forks, resumed agents and teammates are left alone, and so is everything in /route off.
+  "subagents": {
+    "enabled": true,
+    // Keep a model the Agent call already named (Claude chose it on purpose).
+    "keepCallerModel": true,
+    // Let a pick go above the main chat's model. Off: subagents only ever get cheaper.
+    "allowUpgrade": false,
+    // Below this confidence (0-1) the subagent keeps the main chat's model.
+    "minConfidence": 0.6,
+    // Give up after this many milliseconds (500-30000); the subagent then keeps the main chat's model.
+    "timeoutMs": 4000,
+    // Open the "Subagent models" pane on the first subagent of a session.
+    "openPane": true,
+    // Haiku also rates how much harm a subtle mistake could do (0-1). From "riskyAt" on, the
+    // task runs on Opus whatever the tier, the confidence or "allowUpgrade" says.
+    "riskyToOpus": true,
+    "riskyAt": 0.75
+  },
+
+  // Cost savings. Each answer and each subagent run is priced from its real token counts on
+  // the model that ran and on the one that would have run without the router (your session's
+  // model, or a subagent's parent). The Savings pane (/route savings) shows this session and all
+  // time. The ledger file cost-ledger.jsonl next to this file gets one line per priced item (no
+  // prompt text). Prices are US dollars per million tokens, Anthropic list prices; change them
+  // for Bedrock, Vertex or a discount. Cache writes are 1.25x input.
+  "savings": {
+    "enabled": true,
+    "ledger": true,
+    "prices": {
+      "haiku":  { "input": 0.10, "output": 0.50,  "cacheWrite": 0.125, "cacheRead": 0.01 },
+      "sonnet": { "input": 2.00, "output": 10.00, "cacheWrite": 2.50,  "cacheRead": 0.10 },
+      "opus":   { "input": 4.00, "output": 20.00, "cacheWrite": 5.00,  "cacheRead": 0.20 },
+      "fable":  { "input": 8.00, "output": 40.00, "cacheWrite": 10.00, "cacheRead": 0.20 }
+    }
+  },
+
+  // Handoff for long chats. Once the context reaches "autoAtTokens" (0: never automatically),
+  // or when you type /handoff, a helper reads the whole chat (long tool output trimmed) and
+  // writes a detailed handoff prompt. The "Handoff" pane offers Start new chat (a new chat in the
+  // Claude desktop app with the handoff typed in), Copy and Continue here. The transcript is
+  // sent to this model with known key and password formats blanked out first, and the
+  // handoff is blanked the same way. Handoffs are also saved next to this file.
+  "handoff": {
+    "enabled": true,
+    "autoAtTokens": 250000,
+    "model": "sonnet",
+    "effort": "medium",
+    // Longest handoff, in tokens (500-64000).
+    "maxTokens": 8000,
+    // Give up after this many milliseconds (10000-900000).
+    "timeoutMs": 240000,
+    // Most transcript characters sent to the helper (about 4 per token). Long tool output is
+    // trimmed first; only then are messages from the middle left out.
+    "maxInputChars": 600000,
+    "saveToFile": true
+  },
+
+  // Cache clock. After each reply a band above the prompt counts down to when the chat's
+  // prompt cache goes cold (the next message then re-reads the whole chat at full price).
+  // Keep warm sends a tiny ping over the cached chat just before it runs out.
+  "cacheClock": {
+    "enabled": true,
+    // Cache lifetime in minutes. 0 works it out: from a cache hit (or miss) after a pause of more
+    // than 5 minutes, else from what Claude Code asks for, else 5. What it learns is remembered.
+    "ttlMinutes": 0,
+    // Ping this many seconds before the cache would go cold (5-600).
+    "pingLeadSeconds": 30,
+    // Most pings per pause, so a forgotten chat does not ping forever (each ping re-reads the
+    // cached chat at the cache-read price).
+    "maxPings": 6,
+    // Keep warm also stops this many minutes after you switched it on (1-1440).
+    "maxMinutes": 90
   },
 
   // Escalation after a failure: an API error or refusal, a test/build run that was still

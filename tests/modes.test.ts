@@ -17,6 +17,8 @@ type World = {
   efforts: (string | undefined)[]
   asked: string[]
   toasts: string[]
+  /** The model the app's menu shows now; set by a test to stand for the person picking one. */
+  sessionModel?: string
   /** What the classifier model answers; undefined = it gives no answer and the rules decide. */
   verdict?: string
 }
@@ -31,7 +33,7 @@ function world(on: On, opts: { baseModel?: string; baseEffort?: string; store?: 
   })
   mock.env(on, { HOME })
   const clock = mock.clock(on, { now: 1_700_000_000_000 })
-  on('session.model', () => ({ value: opts.baseModel ?? 'claude-opus-5-5' }))
+  on('session.model', () => ({ value: w.sessionModel ?? opts.baseModel ?? 'claude-opus-5-5' }))
   // A conversation already under way unless a test says it is brand new.
   on('session.turns', () => ({ value: opts.fresh ? 0 : 5 }))
   on('command.register', (_, e) => ({ value: { command: e.name } }))
@@ -639,4 +641,42 @@ test('a typical architecture request routes to Opus medium after a classifier ve
   await turn($, 'Design the architecture for migrating our monolith to services, with a roadmap')
   expect(w.models.at(-1)).toBe('claude-opus-5-5')
   expect(w.efforts.at(-1)).toBe('medium')
+})
+
+test('a model the person picks in the app wins over auto routing until /route resume', async ($, on) => {
+  const w = world(on, { store: { mode: 'auto', storeVersion: 2 } })
+  w.verdict = '{"complexity":"simple","sentiment":"neutral","isFeedback":false}'
+  await start($)
+  await turn($, 'What is a closure?')
+  expect(w.models.at(-1)).toBe('haiku')
+  // The person picks Sonnet in the app's menu.
+  w.sessionModel = 'claude-sonnet-5-5'
+  await turn($, 'What is a closure?', { base: 'claude-sonnet-5-5' })
+  expect(w.models.at(-1)).toBe('claude-sonnet-5-5')
+  expect(w.toasts.some(t => t.includes('you chose Sonnet'))).toBe(true)
+  expect(w.status.at(-1)).toContain('/route resume')
+  await turn($, 'What is a closure?', { base: 'claude-sonnet-5-5' })
+  expect(w.models.at(-1)).toBe('claude-sonnet-5-5')
+  await route($, 'resume')
+  await turn($, 'What is a closure?', { base: 'claude-sonnet-5-5' })
+  expect(w.models.at(-1)).toBe('haiku')
+})
+
+test('an effort the person picks mid-turn is kept, not overwritten', async ($, on) => {
+  const w = world(on, { store: { mode: 'auto', storeVersion: 2 } })
+  await start($)
+  await turn($, 'What is a closure?', { baseEffort: 'high' })
+  const routed = w.efforts.at(-1)
+  expect(routed).not.toBe('xhigh')
+  // The person sets xhigh in the app: the next request carries it as the session's own.
+  await turn($, 'What is a closure?', { baseEffort: 'xhigh' })
+  expect(w.efforts.at(-1)).toBe('xhigh')
+  expect(w.toasts.some(t => t.includes('xhigh effort'))).toBe(true)
+})
+
+test('an alias and its full id are not mistaken for a pick', async ($, on) => {
+  const w = world(on, { store: { mode: 'auto', storeVersion: 2 }, baseModel: 'opus' })
+  await start($)
+  await turn($, 'What is a closure?', { base: 'claude-opus-5-5' })
+  expect(w.toasts.some(t => t.includes('you chose'))).toBe(false)
 })

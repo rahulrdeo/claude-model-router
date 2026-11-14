@@ -1,4 +1,5 @@
 // Pure routing logic for the model-router mod.
+import { DEFAULT_PRICES, mergePrices, type Family, type Price } from './savings-core'
 // No engine calls, no I/O: everything here is deterministic and unit-tested.
 
 export type Tier = 'haiku' | 'sonnet' | 'opus'
@@ -105,6 +106,57 @@ export type RouterConfig = {
      */
     bands: Record<Complexity, { min: number; max: number }>
   }
+  /** Subagent model router: Haiku reads each subagent's task and picks its model. */
+  subagents: {
+    enabled: boolean
+    /** Keep the model the Agent call already named (the caller chose on purpose). */
+    keepCallerModel: boolean
+    /** Let a pick go above the parent's model (off: subagents only get cheaper). */
+    allowUpgrade: boolean
+    /** Below this confidence (0-1) the subagent keeps the parent's model. */
+    minConfidence: number
+    timeoutMs: number
+    /** Open the subagent pane on the first pick of a session. */
+    openPane: boolean
+    /** Send a task Haiku rates as risky to Opus, even above the parent's model. */
+    riskyToOpus: boolean
+    /** The risk (0-1) from which a task counts as risky. */
+    riskyAt: number
+  }
+  /** The cost-savings estimate: a ledger file and the Savings pane. */
+  savings: {
+    enabled: boolean
+    /** Also write each priced turn to cost-ledger.jsonl next to the config. */
+    ledger: boolean
+    /** $ per million tokens by model family. */
+    prices: Record<Family, Price>
+  }
+  /** Handoff for long chats: a helper writes a detailed prompt to carry on in a fresh chat. */
+  handoff: {
+    enabled: boolean
+    /** Write a handoff once the context reaches this many tokens (0: only with /handoff). */
+    autoAtTokens: number
+    model: string
+    effort: Effort
+    maxTokens: number
+    timeoutMs: number
+    /** The most transcript text sent to the helper; long tool output is trimmed first. */
+    maxInputChars: number
+    /** Also save each handoff as a Markdown file next to the config. */
+    saveToFile: boolean
+  }
+  /** Cache clock: a countdown to when the chat's prompt cache goes cold. */
+  cacheClock: {
+    enabled: boolean
+    /** Cache lifetime in minutes; 0 detects it (60 when requests ask for a 1-hour cache, else 5). */
+    ttlMinutes: number
+    /** Keep warm pings this many seconds before the cache would expire. */
+    pingLeadSeconds: number
+    /** Most pings per idle stretch, so a forgotten chat does not ping forever. */
+    maxPings: number
+    /** Keep warm also stops this many minutes after it was switched on. */
+    maxMinutes: number
+  }
   escalation: {
     enabled: boolean
     /** Escalation raises effort up to this level on a model, then moves to the next model. */
@@ -137,6 +189,19 @@ export const DEFAULT_CONFIG: RouterConfig = {
       architecture: { min: 65, max: 74 },
     },
   },
+  subagents: { enabled: true, keepCallerModel: true, allowUpgrade: false, minConfidence: 0.6, timeoutMs: 4000, openPane: true, riskyToOpus: true, riskyAt: 0.75 },
+  savings: { enabled: true, ledger: true, prices: DEFAULT_PRICES },
+  handoff: {
+    enabled: true,
+    autoAtTokens: 250000,
+    model: 'sonnet',
+    effort: 'medium',
+    maxTokens: 8000,
+    timeoutMs: 240000,
+    maxInputChars: 600000,
+    saveToFile: true,
+  },
+  cacheClock: { enabled: true, ttlMinutes: 0, pingLeadSeconds: 30, maxPings: 6, maxMinutes: 90 },
   defaultMode: 'recommend',
   defaultLockModel: 'sonnet',
   models: { haiku: 'haiku', sonnet: 'sonnet', opus: 'opus' },
@@ -397,7 +462,8 @@ export function mergeConfig(user: unknown): { config: RouterConfig; warnings: st
     const l = user.logging
     if (typeof l.enabled === 'boolean') config.logging.enabled = l.enabled
     else if (l.enabled !== undefined) warnings.push('logging.enabled must be true or false; using default')
-    config.logging.maxBytes = num(l.maxBytes, 'logging.maxBytes', 10_000, 100_000_000) ?? config.logging.maxBytes
+    // The engine reads files of up to 4 MiB, and the log is read back to append to it.
+    config.logging.maxBytes = num(l.maxBytes, 'logging.maxBytes', 10_000, 4_000_000) ?? config.logging.maxBytes
     if (typeof l.includePromptExcerpt === 'boolean') config.logging.includePromptExcerpt = l.includePromptExcerpt
   }
   if (typeof user.manualAskOnlyOnChange === 'boolean') config.manualAskOnlyOnChange = user.manualAskOnlyOnChange
@@ -487,6 +553,58 @@ export function mergeConfig(user: unknown): { config: RouterConfig; warnings: st
       }
     } else if (k.bands !== undefined) warnings.push('classifier.bands must be an object; using default')
   }
+  const bool = (v: unknown, path: string): boolean | undefined => {
+    if (v === undefined) return undefined
+    if (typeof v === 'boolean') return v
+    warnings.push(`${path} must be true or false; using default`)
+    return undefined
+  }
+  const str = (v: unknown, path: string): string | undefined => {
+    if (v === undefined) return undefined
+    if (typeof v === 'string' && v.trim() !== '') return v.trim()
+    warnings.push(`${path} must be a non-empty string; using default`)
+    return undefined
+  }
+  if (isObj(user.subagents)) {
+    const a = user.subagents
+    const c = config.subagents
+    c.enabled = bool(a.enabled, 'subagents.enabled') ?? c.enabled
+    c.keepCallerModel = bool(a.keepCallerModel, 'subagents.keepCallerModel') ?? c.keepCallerModel
+    c.allowUpgrade = bool(a.allowUpgrade, 'subagents.allowUpgrade') ?? c.allowUpgrade
+    c.minConfidence = num(a.minConfidence, 'subagents.minConfidence', 0, 1) ?? c.minConfidence
+    c.timeoutMs = num(a.timeoutMs, 'subagents.timeoutMs', 500, 30000) ?? c.timeoutMs
+    c.openPane = bool(a.openPane, 'subagents.openPane') ?? c.openPane
+    c.riskyToOpus = bool(a.riskyToOpus, 'subagents.riskyToOpus') ?? c.riskyToOpus
+    c.riskyAt = num(a.riskyAt, 'subagents.riskyAt', 0, 1) ?? c.riskyAt
+  } else if (user.subagents !== undefined) warnings.push('subagents must be an object; using default')
+  if (isObj(user.savings)) {
+    const v = user.savings
+    config.savings.enabled = bool(v.enabled, 'savings.enabled') ?? config.savings.enabled
+    config.savings.ledger = bool(v.ledger, 'savings.ledger') ?? config.savings.ledger
+    config.savings.prices = mergePrices(v.prices, warnings)
+  } else if (user.savings !== undefined) warnings.push('savings must be an object; using default')
+  if (isObj(user.handoff)) {
+    const h = user.handoff
+    const c = config.handoff
+    c.enabled = bool(h.enabled, 'handoff.enabled') ?? c.enabled
+    c.autoAtTokens = num(h.autoAtTokens, 'handoff.autoAtTokens', 0, 10_000_000) ?? c.autoAtTokens
+    c.model = str(h.model, 'handoff.model') ?? c.model
+    if (isEffort(h.effort)) c.effort = h.effort
+    else if (h.effort !== undefined) warnings.push(`handoff.effort must be one of ${EFFORTS.join(', ')}; using default`)
+    c.maxTokens = num(h.maxTokens, 'handoff.maxTokens', 500, 64000) ?? c.maxTokens
+    c.timeoutMs = num(h.timeoutMs, 'handoff.timeoutMs', 10000, 900000) ?? c.timeoutMs
+    c.maxInputChars = num(h.maxInputChars, 'handoff.maxInputChars', 20000, 4_000_000) ?? c.maxInputChars
+    c.saveToFile = bool(h.saveToFile, 'handoff.saveToFile') ?? c.saveToFile
+  } else if (user.handoff !== undefined) warnings.push('handoff must be an object; using default')
+  if (isObj(user.cacheClock)) {
+    const k = user.cacheClock
+    const c = config.cacheClock
+    c.enabled = bool(k.enabled, 'cacheClock.enabled') ?? c.enabled
+    c.ttlMinutes = num(k.ttlMinutes, 'cacheClock.ttlMinutes', 0, 1440) ?? c.ttlMinutes
+    c.pingLeadSeconds = num(k.pingLeadSeconds, 'cacheClock.pingLeadSeconds', 5, 600) ?? c.pingLeadSeconds
+    c.maxPings = num(k.maxPings, 'cacheClock.maxPings', 0, 100) ?? c.maxPings
+    c.maxMinutes = num(k.maxMinutes, 'cacheClock.maxMinutes', 1, 1440) ?? c.maxMinutes
+  } else if (user.cacheClock !== undefined) warnings.push('cacheClock must be an object; using default')
   if (isObj(user.escalation)) {
     const x = user.escalation
     if (typeof x.enabled === 'boolean') config.escalation.enabled = x.enabled
@@ -863,6 +981,9 @@ export type RouteCommand =
   | { kind: 'status' }
   | { kind: 'reload' }
   | { kind: 'log'; enabled: boolean }
+  | { kind: 'feature'; feature: 'agents' | 'handoff' | 'clock'; enabled?: boolean }
+  | { kind: 'resume' }
+  | { kind: 'savings'; reset?: boolean }
   | { kind: 'help' }
   | { kind: 'error'; message: string }
 
@@ -912,10 +1033,27 @@ export function parseRouteCommand(args: string, cfg: RouterConfig = DEFAULT_CONF
       return { kind: 'error', message: 'Use /route effort auto or /route effort lock <level>.' }
     case 'reload':
       return { kind: 'reload' }
+    case 'resume':
+      return { kind: 'resume' }
+    case 'savings':
+    case 'saved':
+      if (arg === undefined || arg === 'show') return { kind: 'savings' }
+      if (arg === 'reset') return { kind: 'savings', reset: true }
+      return { kind: 'error', message: 'Use /route savings to show the Savings pane, or /route savings reset to start the all-time total again.' }
     case 'log':
       if (arg === 'on') return { kind: 'log', enabled: true }
       if (arg === 'off') return { kind: 'log', enabled: false }
       return { kind: 'error', message: 'Use /route log on or /route log off.' }
+    case 'agents':
+    case 'subagents':
+    case 'handoff':
+    case 'clock':
+    case 'cache': {
+      const feature = head === 'subagents' ? 'agents' : head === 'cache' ? 'clock' : head
+      if (arg === undefined || arg === 'show' || arg === 'status') return { kind: 'feature', feature }
+      if (arg === 'on' || arg === 'off') return { kind: 'feature', feature, enabled: arg === 'on' }
+      return { kind: 'error', message: `Use /route ${head} on, /route ${head} off, or /route ${head} to show it.` }
+    }
     case 'help':
       return { kind: 'help' }
     default:
@@ -938,6 +1076,11 @@ export const HELP_TEXT = [
   '  /route effort lock <level>   always use low, medium, high, xhigh or max',
   '  /route log on|off            turn the decision log on or off',
   '  /route reload                re-read the config file',
+  '  /route resume                let the router choose again after you picked a model or effort yourself',
+  '  /route agents [on|off]       subagent model router: show its pane, or turn it on/off',
+  '  /route handoff [on|off]      automatic handoff for long chats; /handoff writes one now',
+  '  /route clock [on|off]        cache clock: countdown to when the chat cache goes cold',
+  '  /route savings [reset]       what the router saved, this session and all time'
 ].join('\n')
 
 export type StatusInput = {
