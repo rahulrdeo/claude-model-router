@@ -15,7 +15,7 @@ and the project uses [Semantic Versioning](https://semver.org/).
   output, cache reads, cache writes and their sum, so Haiku and Opus turns can be compared
   with the session percentage directly.
 
-## [1.0.0] - 2026-11-15
+## [1.0.0] - 2026-11-14
 
 The first consolidated release. It covers all changes from the original build through the
 earlier 2.x numbering (up to and including 2.9.0). Earlier per-version notes were not kept.
