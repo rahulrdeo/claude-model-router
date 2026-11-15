@@ -17,8 +17,7 @@ and the project uses [Semantic Versioning](https://semver.org/).
 
 ## [1.0.0] - 2026-11-14
 
-The first consolidated release. It covers all changes from the original build through the
-earlier 2.x numbering (up to and including 2.9.0). Earlier per-version notes were not kept.
+The first consolidated release.
 
 ### Added
 - **Routing.** Each prompt is routed to Haiku, Sonnet or Opus with an effort level. Modes:
