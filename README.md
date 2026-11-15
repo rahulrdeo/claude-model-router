@@ -25,6 +25,7 @@ Works the same on **Windows and macOS**, in the **terminal** and in the **Deskto
 | Step | What happens |
 |---|---|
 | 0. Classifier | A small model (Haiku, low effort) reads the new message with the previous task and the last answer, and returns its complexity, its sentiment and whether it is feedback on the last result. Feedback inherits the level of the task it refers to; negative feedback raises it. If the classifier fails or times out, the rules decide alone. |
+| 0a. Continuing | A message that continues the last task keeps that task's level, whatever the classifier says: feedback on it, a short message asking to continue (`context.continueKeywords`: "continue", "go on", "yes", "do it"…, up to 4 words), or any message of up to 4 words right after you stopped a turn. So "Continue" after a stopped Opus task stays on Opus. A new short question after a finished task is still judged on its own. |
 | 1. Prompt submitted | A `prompt.submit` hook scores the prompt from 0 to 100: length, task type (architecture, build, debugging, code, writing, quick Q&A), complexity keywords, code blocks, stack traces, file names and numbered requirements. |
 | 2. Context | The score is blended with recent prompts in the session. A short follow-up such as *"now do the same for billing"* is mostly judged by the conversation it continues, however long ago that was. |
 | 3. Model | `< haikuMax` → Haiku, `≥ opusMin` → Opus, anything else → Sonnet. |

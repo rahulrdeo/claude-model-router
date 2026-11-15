@@ -4,6 +4,28 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project uses [Semantic Versioning](https://semver.org/).
 
+## [1.2.0] - 2026-11-15
+
+### Fixed
+- **"Continue" dropped to Haiku after a stopped turn.** The classifier
+  read "Continue" as a new simple task, and the simple band (0–29) sent it to Haiku even
+  though the task it continued was on Opus. A message that continues the last task now keeps
+  that task's level:
+  - feedback on it (as before);
+  - a message of up to 4 words asking to continue (`context.continueKeywords`: "continue",
+    "go on", "keep going", "yes", "do it"…);
+  - any message of up to 4 words right after a stopped turn.
+  Such messages do not enter the score history. A new short question after a finished task
+  is still judged on its own.
+
+### Changed
+- The classifier's instructions say that "continue", "go on" and similar, also after a
+  stopped answer, continue the previous task. When the last answer was stopped, the classifier
+  is told so.
+
+### Added
+- Config: `context.continueKeywords`.
+
 ## [1.1.0] - 2026-11-15
 
 ### Added
@@ -15,9 +37,10 @@ and the project uses [Semantic Versioning](https://semver.org/).
   output, cache reads, cache writes and their sum, so Haiku and Opus turns can be compared
   with the session percentage directly.
 
-## [1.0.0] - 2026-11-14
+## [1.0.0] - 2026-11-15
 
-The first consolidated release.
+The first consolidated release. It covers all changes from the original build through the
+earlier 2.x numbering (up to and including 2.9.0). Earlier per-version notes were not kept.
 
 ### Added
 - **Routing.** Each prompt is routed to Haiku, Sonnet or Opus with an effort level. Modes:

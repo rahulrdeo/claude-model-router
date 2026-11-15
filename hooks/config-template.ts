@@ -52,6 +52,13 @@ export const CONFIG_TEMPLATE = `// Model router configuration.
       "it", "that", "this", "those", "these", "again", "also", "continue", "go on", "go ahead",
       "do it", "same", "instead", "next", "what about", "and then", "now", "ok", "okay", "yes",
       "try", "still", "retry", "above", "previous"
+    ],
+    // A message of at most 4 words with one of these continues the last task and keeps its level,
+    // even if the classifier reads it as a new simple task (for example "Continue" after you
+    // stopped a turn).
+    "continueKeywords": [
+      "continue", "go on", "go ahead", "keep going", "carry on", "proceed", "resume", "finish it",
+      "do it", "yes", "ok", "okay", "next", "more"
     ]
   },
 

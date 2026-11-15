@@ -48,6 +48,7 @@ import {
 import {
   analyse,
   applyVerdict,
+  isContinuation,
   bandEffort,
   decide,
   decideEffort,
@@ -173,6 +174,8 @@ let effortOverride: Effort | undefined
 let once: { model?: string; effort?: Effort; tier?: Tier; turnId?: string } | null = null
 /** Whether the last test or build run of the current turn failed. */
 let lastRunFailed = false
+/** Whether the last main-loop turn was stopped before it finished. */
+let lastTurnStopped = false
 /** Whether this process has sent a main-loop request yet (after which a prompt cache exists). */
 let sawMainRequest = false
 let logQueue: Promise<void> = Promise.resolve()
@@ -456,7 +459,7 @@ async function askRecommend(
 
 const CLASSIFIER_SYSTEM = `You classify one message from a person to an AI coding assistant, given the previous task and the assistant's last answer. Reply with JSON only, no other text: {"complexity":"simple|moderate|complex|architecture","sentiment":"approve|neutral|negative","isFeedback":true|false}
 complexity: how hard the work the message asks for is. simple: a quick question or a small edit. moderate: one feature or fix. complex: a multi-part build or debugging across files. architecture: system design or a large refactor.
-isFeedback: true when the message reacts to the last answer ("still wrong", "perfect, thanks", "now make the chart red") rather than starting an unrelated task.
+isFeedback: true when the message reacts to or continues the previous task ("still wrong", "perfect, thanks", "now make the chart red", "continue", "go on", "keep going" — also after an answer that was stopped or cut short) rather than starting an unrelated task. A one-word "continue" is never a new simple task.
 sentiment: how the person feels about the last answer: approve, neutral, or negative (frustrated, or says it is wrong or broken).
 Judge the work the message asks for, not its length: a short message can still ask for hard work.`
 
@@ -465,7 +468,7 @@ async function classify($: EngineInterface, text: string, s: Required<RouterSess
   const c = cfg.classifier
   const prompt = [
     `Previous task: ${s.lastTask || '(none yet)'}`,
-    `Last answer (excerpt): ${s.lastAnswer || '(none yet)'}`,
+    `Last answer (excerpt)${lastTurnStopped ? ', stopped by the person before it finished' : ''}: ${s.lastAnswer || '(none yet)'}`,
     `Message: ${text}`,
   ].join('\n\n')
   const r = await $.model.complete({ model: c.model, system: CLASSIFIER_SYSTEM, prompt, maxTokens: 80, effort: c.effort, timeoutMs: c.timeoutMs })
@@ -530,10 +533,14 @@ async function route($: EngineInterface, text: string, hasOnce: boolean, classif
   // Time the recommend dialog was open: waiting for you, not routing work. Left out of `ms`.
   let dialogMs = 0
   let a = analyse(text, s.history, cfg)
-  // Feedback on the last task does not count as a task of its own: it neither enters the
-  // history nor replaces the task's level, unless it is negative (then the level climbs).
-  const isNewTask = !(classified.verdict?.isFeedback === true && s.taskScore !== null)
-  if (classified.verdict) a = applyVerdict(a, classified.verdict, { taskScore: s.taskScore }, cfg)
+  // A message that continues the last task keeps its level: feedback on it, a short message
+  // asking to continue ("continue", "go on", "yes"), or a short message after a stopped turn.
+  // Such a message neither enters the history nor replaces the task's level, unless it is
+  // negative feedback (then the level climbs).
+  const continues = s.taskScore !== null && (classified.verdict?.isFeedback === true || isContinuation(text, cfg) || (lastTurnStopped && a.words <= 4))
+  const isNewTask = !continues
+  if (classified.verdict) a = applyVerdict(a, classified.verdict, { taskScore: s.taskScore, continues }, cfg)
+  else if (continues) a = applyVerdict(a, { complexity: 'simple', sentiment: 'neutral', isFeedback: false }, { taskScore: s.taskScore, continues }, cfg)
   const cur = currentCombo(s)
 
   // Model, with stickiness.
@@ -1012,6 +1019,7 @@ export const register: Register = on => {
   effortOverride = undefined
   once = null
   lastRunFailed = false
+  lastTurnStopped = false
   sawMainRequest = false
   logQueue = Promise.resolve()
   agentsOverride = undefined
@@ -1357,6 +1365,8 @@ export const register: Register = on => {
       }
       // The answer the next prompt is read against, for the classifier.
       await update($, session, p => ({ ...normalize(p), lastAnswer: String(e.answer ?? '').slice(0, 600) }))
+      // A stopped turn leaves its task unfinished: the next short message continues it.
+      lastTurnStopped = e.reason === 'aborted'
       if (failure) await noteFailure($, failure)
       lastRunFailed = false
       if (once && (once.turnId === undefined || once.turnId === e.turnId)) once = null

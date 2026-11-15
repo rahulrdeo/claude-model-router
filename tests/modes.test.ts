@@ -78,13 +78,14 @@ function world(on: On, opts: { baseModel?: string; baseEffort?: string; store?: 
     return result
   })
   on('turn.start', (_, e) => ({ turnId: e.turnId }))
-  on('model.complete', () =>
-    ({
+  on('model.complete', (_, e) => {
+    ;((w as unknown as { classifierPrompts?: string[] }).classifierPrompts ??= []).push(String((e as { prompt?: unknown }).prompt ?? ''))
+    return ({
       value: w.verdict === undefined
         ? { isAnswered: false, reason: 'aborted', usage: null }
         : { isAnswered: true, text: w.verdict, usage: null },
-    }) as never,
-  )
+    }) as never
+  })
   on('turn.complete', (_, e) => ({ text: e.answer }))
   on('tool.call', { tool: 'Bash' }, () => {
     const b = opts.bash ?? { isError: false, stdout: 'ok' }
@@ -119,7 +120,7 @@ let turnCounter = 0
 async function turn(
   $: Engine,
   text: string,
-  o: { base?: string; baseEffort?: string; bash?: string; reason?: 'answer' | 'error' } = {},
+  o: { base?: string; baseEffort?: string; bash?: string; reason?: 'answer' | 'error' | 'aborted' } = {},
 ) {
   const turnId = `turn-${++turnCounter}`
   await submit($, text)
@@ -679,4 +680,75 @@ test('an alias and its full id are not mistaken for a pick', async ($, on) => {
   await start($)
   await turn($, 'What is a closure?', { base: 'claude-opus-5-5' })
   expect(w.toasts.some(t => t.includes('you chose'))).toBe(false)
+})
+
+// ---------------------------------------------------------------------------
+// Continuing a task keeps its level
+
+const NEW_SIMPLE = '{"complexity":"simple","sentiment":"neutral","isFeedback":false}'
+const BIG_TASK = 'Design the architecture for migrating our monolith to services, with a roadmap'
+
+test('"Continue" after a stopped Opus turn stays on Opus medium (the classifier calls it a new simple task)', async ($, on) => {
+  const w = world(on, { store: { mode: 'auto', storeVersion: 2 }, fresh: true })
+  await start($)
+  w.verdict = ARCH
+  await turn($, BIG_TASK, { reason: 'aborted' })
+  expect(w.models.at(-1)).toBe('claude-opus-5-5')
+  w.verdict = NEW_SIMPLE
+  await turn($, 'Continue')
+  expect(w.models.at(-1)).toBe('claude-opus-5-5')
+  expect(w.efforts.at(-1)).toBe('medium')
+  expect(w.status.at(-1)).toContain('continues the last task')
+})
+
+test('the classifier is told when the last answer was stopped', async ($, on) => {
+  const w = world(on, { store: { mode: 'auto', storeVersion: 2 }, fresh: true })
+  await start($)
+  w.verdict = ARCH
+  await turn($, BIG_TASK, { reason: 'aborted' })
+  w.verdict = NEW_SIMPLE
+  await turn($, 'Continue')
+  const prompts = (w as unknown as { classifierPrompts: string[] }).classifierPrompts
+  expect(prompts.at(-1)).toContain('stopped by the person before it finished')
+  expect(prompts[0]).not.toContain('stopped by the person')
+})
+
+test('"go on" after a finished turn also keeps the task level', async ($, on) => {
+  const w = world(on, { store: { mode: 'auto', storeVersion: 2 }, fresh: true })
+  await start($)
+  w.verdict = ARCH
+  await turn($, BIG_TASK)
+  w.verdict = NEW_SIMPLE
+  await turn($, 'go on')
+  expect(w.models.at(-1)).toBe('claude-opus-5-5')
+})
+
+test('a short instruction right after a stopped turn continues it', async ($, on) => {
+  const w = world(on, { store: { mode: 'auto', storeVersion: 2 }, fresh: true })
+  await start($)
+  w.verdict = ARCH
+  await turn($, BIG_TASK, { reason: 'aborted' })
+  w.verdict = NEW_SIMPLE
+  await turn($, 'use AWS instead')
+  expect(w.models.at(-1)).toBe('claude-opus-5-5')
+})
+
+test('a new short question after a finished task is still judged on its own', async ($, on) => {
+  const w = world(on, { store: { mode: 'auto', storeVersion: 2 }, fresh: true })
+  await start($)
+  w.verdict = ARCH
+  await turn($, BIG_TASK)
+  w.verdict = NEW_SIMPLE
+  await turn($, 'What is a closure?')
+  expect(w.models.at(-1)).toBe('haiku')
+})
+
+test('"Continue" keeps the task level even when the classifier gives no answer', async ($, on) => {
+  const w = world(on, { store: { mode: 'auto', storeVersion: 2 }, fresh: true })
+  await start($)
+  w.verdict = ARCH
+  await turn($, BIG_TASK, { reason: 'aborted' })
+  w.verdict = undefined
+  await turn($, 'Continue')
+  expect(w.models.at(-1)).toBe('claude-opus-5-5')
 })

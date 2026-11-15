@@ -24,6 +24,7 @@ import {
   tierForScore,
   tierOf,
 } from '../hooks/router-core'
+import { isContinuation } from '../hooks/router-core'
 
 const cfg = DEFAULT_CONFIG
 
@@ -582,5 +583,23 @@ describe('architecture and effort after a verdict', () => {
   test('the rules alone (no classifier answer) can still reach xhigh for architecture', () => {
     const huge = analyse('Design the architecture for migrating our monolith to microservices.\n- data model\n- trade-offs\n- rollout roadmap\n- performance and security\n- every service boundary, step by step, production', [], cfg)
     expect(recommendEffort(huge, huge.tier, cfg).effort).toBe('xhigh')
+  })
+})
+
+describe('continuations', () => {
+  test('short "continue" messages are continuations; longer or unrelated ones are not', () => {
+    expect(isContinuation('Continue', cfg)).toBe(true)
+    expect(isContinuation('go on please', cfg)).toBe(true)
+    expect(isContinuation('Yes, do it', cfg)).toBe(true)
+    expect(isContinuation('What is a closure?', cfg)).toBe(false)
+    expect(isContinuation('continue with the database migration plan and then the rollout', cfg)).toBe(false)
+  })
+
+  test('a continuation inherits the task score even when the verdict says new and simple', () => {
+    const a = analyse('Continue', [], cfg)
+    const out = applyVerdict(a, { complexity: 'simple', sentiment: 'neutral', isFeedback: false }, { taskScore: 70, continues: true }, cfg)
+    expect(out.score).toBe(70)
+    expect(out.tier).toBe('opus')
+    expect(out.reason).toContain('continues the last task')
   })
 })

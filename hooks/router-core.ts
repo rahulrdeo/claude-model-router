@@ -60,6 +60,8 @@ export type RouterConfig = {
     /** Prompts with at most this many words can count as follow-ups. */
     followUpMaxWords: number
     followUpKeywords: string[]
+    /** A message of at most 4 words with one of these continues the last task and keeps its level. */
+    continueKeywords: string[]
   }
   /** Keyword groups: each match adds the group's weight (negative lowers the score). */
   taskTypes: Record<Exclude<TaskType, 'general'>, KeywordGroup>
@@ -220,6 +222,10 @@ export const DEFAULT_CONFIG: RouterConfig = {
       'it', 'that', 'this', 'those', 'these', 'again', 'also', 'continue', 'go on', 'go ahead',
       'do it', 'same', 'instead', 'next', 'what about', 'and then', 'now', 'ok', 'okay', 'yes',
       'try', 'still', 'retry', 'above', 'previous',
+    ],
+    continueKeywords: [
+      'continue', 'go on', 'go ahead', 'keep going', 'carry on', 'proceed', 'resume', 'finish it',
+      'do it', 'yes', 'ok', 'okay', 'next', 'more',
     ],
   },
   taskTypes: {
@@ -454,6 +460,7 @@ export function mergeConfig(user: unknown): { config: RouterConfig; warnings: st
     config.context.followUpWeight = num(c.followUpWeight, 'context.followUpWeight', 0, 1) ?? config.context.followUpWeight
     config.context.followUpMaxWords = num(c.followUpMaxWords, 'context.followUpMaxWords', 0, 1000) ?? config.context.followUpMaxWords
     config.context.followUpKeywords = strs(c.followUpKeywords, 'context.followUpKeywords') ?? config.context.followUpKeywords
+    config.context.continueKeywords = strs(c.continueKeywords, 'context.continueKeywords') ?? config.context.continueKeywords
   }
   if (isObj(user.taskTypes)) {
     for (const k of Object.keys(config.taskTypes) as (keyof RouterConfig['taskTypes'])[]) {
@@ -1160,21 +1167,35 @@ export function parseVerdict(text: string): Verdict | null {
   return { complexity: complexity as Complexity, sentiment: sentiment as Sentiment, isFeedback }
 }
 
+/** True for a message of at most 4 words that asks to continue ("Continue", "go on", "yes, do it"). */
+export function isContinuation(prompt: string, cfg: RouterConfig): boolean {
+  const text = prompt.toLowerCase()
+  return wordCount(text) <= 4 && countMatches(text, cfg.context.continueKeywords) > 0
+}
+
 /**
  * Applies a verdict to the rules' analysis.
  * - Feedback on the last task: the task's score carries over, and negative feedback
  *   raises it by `classifier.negativeBump`, so repeated complaints keep climbing.
+ * - A message that continues the last task (`memory.continues`) keeps its score too.
  * - A new task: the rules' score held inside the band for the classifier's complexity,
  *   still under the task type's ceiling.
  */
-export function applyVerdict(a: Analysis, v: Verdict, memory: { taskScore: number | null }, cfg: RouterConfig): Analysis {
+export function applyVerdict(a: Analysis, v: Verdict, memory: { taskScore: number | null; continues?: boolean }, cfg: RouterConfig): Analysis {
   const c = cfg.classifier
   let score: number
   let reason: string
-  if (v.isFeedback && memory.taskScore !== null) {
+  // Feedback on the last task, or a message that continues it ("continue", "go on", or a short
+  // message after a stopped turn), keeps the task's level instead of being judged on its own.
+  if ((v.isFeedback || memory.continues === true) && memory.taskScore !== null) {
     const bump = v.sentiment === 'negative' ? c.negativeBump : 0
     score = Math.round(clamp(memory.taskScore + bump))
-    reason = bump > 0 ? `feedback: last result was not right, +${bump} on ${memory.taskScore}` : `feedback on the last task (${memory.taskScore})`
+    reason =
+      bump > 0
+        ? `feedback: last result was not right, +${bump} on ${memory.taskScore}`
+        : v.isFeedback
+          ? `feedback on the last task (${memory.taskScore})`
+          : `continues the last task (${memory.taskScore})`
   } else {
     const band = c.bands[v.complexity]
     score = Math.min(band.max, Math.max(band.min, a.score))
