@@ -16,7 +16,7 @@ import type { EngineInterface, Register, Timer } from 'claude-code'
 
 import type { AgentPickRow, CacheClockState, HandoffState, RouterSession, SavingsItem, SavingsTotals } from '../types'
 import { CONFIG_TEMPLATE } from './config-template'
-import { addItem, emptyTotals, familyOf, insteadOfTokens, keepWarmCosts, netSaved, priceOf, savedShare, usd, type CostItem, type Tokens } from './savings-core'
+import { addItem, tokenTotals, emptyTotals, familyOf, insteadOfTokens, keepWarmCosts, netSaved, priceOf, savedShare, usd, type CostItem, type Tokens } from './savings-core'
 import {
   AGENT_PICK_SYSTEM,
   agentPickPrompt,
@@ -1352,6 +1352,7 @@ export const register: Register = on => {
           effort: effortOverride ?? baseEffort ?? 'default',
           durationMs: e.durationMs,
           usage: e.usage ?? null,
+          totals: tokenTotals(e.usage),
         })
       }
       // The answer the next prompt is read against, for the classifier.
@@ -1823,6 +1824,10 @@ export const register: Register = on => {
     // What routing has saved this session, once something has been priced (/route savings for details).
     const ses = await read($, savingsSession)
     const net = netSaved(ses)
+    const warnNote =
+      cfg.handoff.warnAtTokens > 0 && st.tokens !== undefined && st.tokens >= cfg.handoff.warnAtTokens
+        ? ` · this chat is ${formatTokens(st.tokens)}, and every turn re-reads all of it: /handoff to start a fresh one`
+        : ''
     const savedNote = cfg.savings.enabled && ses.main.count + ses.subagents.count > 0 ? ` · ${net >= 0 ? 'saved' : 'extra'} ${usd(Math.abs(net))} this session` : ''
     if (left <= 0) {
       // A big chat that went cold costs the same to resume as to restart small from a handoff.
@@ -1854,6 +1859,7 @@ export const register: Register = on => {
               ? `· keeping warm, ping ${st.pings}/${cfg.cacheClock.maxPings}${costs.ping !== null ? ` at ~${usd(costs.ping)} each` : ''}${st.lastPing ? ` · ${st.lastPing}` : ''}`
               : `· then your next message costs full price (${formatTokens(st.tokens)})${costs.ping !== null && costs.cold !== null ? ` · a ping ~${usd(costs.ping)}, going cold ~${usd(costs.cold)}` : ''}${st.lastPing ? ` · keep warm ${st.lastPing}` : ''}`}
             {savedNote}
+            {warnNote}
           </Text>
         </Text>
         {st.keepWarm ? (

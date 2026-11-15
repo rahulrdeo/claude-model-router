@@ -264,6 +264,9 @@ export const CONFIG_TEMPLATE = `// Model router configuration.
   "handoff": {
     "enabled": true,
     "autoAtTokens": 250000,
+    // Show a note under the prompt, while the cache is warm, once the chat reaches this many
+    // tokens: every turn re-reads the whole chat, so a fresh chat with /handoff is cheaper (0: never).
+    "warnAtTokens": 150000,
     "model": "sonnet",
     "effort": "medium",
     // Longest handoff, in tokens (500-64000).

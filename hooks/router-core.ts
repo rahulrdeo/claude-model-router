@@ -136,6 +136,8 @@ export type RouterConfig = {
     enabled: boolean
     /** Write a handoff once the context reaches this many tokens (0: only with /handoff). */
     autoAtTokens: number
+    /** Show a note under the prompt once the chat reaches this many tokens (0: never). */
+    warnAtTokens: number
     model: string
     effort: Effort
     maxTokens: number
@@ -196,6 +198,7 @@ export const DEFAULT_CONFIG: RouterConfig = {
   handoff: {
     enabled: true,
     autoAtTokens: 250000,
+    warnAtTokens: 150000,
     model: 'sonnet',
     effort: 'medium',
     maxTokens: 8000,
@@ -590,6 +593,7 @@ export function mergeConfig(user: unknown): { config: RouterConfig; warnings: st
     const c = config.handoff
     c.enabled = bool(h.enabled, 'handoff.enabled') ?? c.enabled
     c.autoAtTokens = num(h.autoAtTokens, 'handoff.autoAtTokens', 0, 10_000_000) ?? c.autoAtTokens
+    c.warnAtTokens = num(h.warnAtTokens, 'handoff.warnAtTokens', 0, 10_000_000) ?? c.warnAtTokens
     c.model = str(h.model, 'handoff.model') ?? c.model
     if (isEffort(h.effort)) c.effort = h.effort
     else if (h.effort !== undefined) warnings.push(`handoff.effort must be one of ${EFFORTS.join(', ')}; using default`)

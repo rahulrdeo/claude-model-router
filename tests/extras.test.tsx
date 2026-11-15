@@ -628,6 +628,35 @@ test('Keep warm sends at most 2 pings per pause by default', async ($, on) => {
   expect(w.forks).toBe(2)
 })
 
+test('the band warns while the cache is warm once the chat is big, and names /handoff', async ($, on) => {
+  world(on, { tokens: 160_000 })
+  await start($)
+  await endTurn($)
+  expect(await bandText($, /every turn re-reads all of it: \/handoff/)).toBeTruthy()
+})
+
+test('no warning below handoff.warnAtTokens', async ($, on) => {
+  world(on, { tokens: 100_000 })
+  await start($)
+  await endTurn($)
+  expect(await bandText($, /re-reads all of it/)).toBeFalsy()
+})
+
+test('the turn log holds the token totals of each turn', async ($, on) => {
+  const { w } = world(on)
+  await start($)
+  await command($, 'route', 'log on')
+  await $.turn.start({ text: 'hi', turnId: 'tl' } as never)
+  for await (const _ of $.turn.step({ turnId: 'tl', index: 0, model: 'claude-opus-5-5', messageCount: 1, effort: 'high' } as never)) {
+    // drain
+  }
+  const usage = { input_tokens: 5, output_tokens: 100, cache_read_input_tokens: 2000, cache_creation_input_tokens: 0, model: 'claude-opus-5-5' }
+  await $.turn.complete({ answer: 'ok', durationMs: 1, isAborted: false, turnId: 'tl', reason: 'answer', usage } as never)
+  const turn = (w.files.get(`${HOME}/.claude/model-router/routing.log`) ?? '').trim().split('\n').map(l => JSON.parse(l)).find(l => l.event === 'turn')
+  expect(turn).toBeTruthy()
+  expect(turn.totals).toEqual({ input: 5, output: 100, cacheRead: 2000, cacheWrite: 0, total: 2105 })
+})
+
 test('the band shows what a ping and going cold cost', async ($, on) => {
   const { w } = world(on, { tokens: 120_000 })
   await start($)

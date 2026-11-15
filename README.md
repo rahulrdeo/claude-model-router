@@ -351,6 +351,7 @@ The cache clock band under the prompt also shows a running line, "saved $X this 
 When a chat gets long, every message re-reads all of it. The handoff lets you continue in a fresh, short chat without losing the thread.
 
 - **When:** automatically once the context reaches 250,000 tokens (`handoff.autoAtTokens`; once per long chat), or any time you type `/handoff`.
+- **Warning:** while the cache is warm, the band under the prompt says once the chat reaches 150,000 tokens (`handoff.warnAtTokens`; 0 turns it off), since every turn re-reads the whole chat.
 - **How:** a helper on **Sonnet** (`handoff.model`) reads the whole chat and writes a detailed handoff prompt: goal, current state with exact paths and commands, decisions and constraints, open problems, ordered next steps and key context. Long tool output is trimmed first; only if the chat is still larger than `handoff.maxInputChars` are messages from the middle left out (never the first request or the latest exchanges). It runs in the background, so your chat isn't blocked.
 - **Secrets stay out.** Known key and password formats (API keys, cloud and GitHub tokens, private keys, JWTs, passwords in URLs and `password=` style settings) are blanked out of the transcript before the helper reads it, and out of the handoff before it is saved, copied or opened. The pane says how many were blanked. This catches common formats, not every secret, so read the handoff before you share it.
 - **The Handoff pane** shows the prompt with four buttons:
@@ -452,7 +453,7 @@ It's JSON with comments (`//`, `/* */` and trailing commas are fine), and every 
 
 ### Decision log
 
-With logging on, each event is one JSON line in `routing.log`, next to the config:
+With logging on, each event is one JSON line in `routing.log`, next to the config: each `turn` line now has a `totals` object (input, output, cache reads, cache writes and their sum) for comparing turns against your session percentage.
 
 ```json
 {"ts":"2026-11-14T10:02:11.000Z","event":"route","mode":"auto","effortMode":"auto","score":0,"ownScore":0,"type":"quick-qa","complexity":"low","output":"small","followUp":false,"from":{"tier":"opus","effort":"high"},"recommended":{"tier":"haiku","effort":"low"},"chosen":{"tier":"haiku","effort":"low"},"decision":"auto-switch","model":"haiku","effort":"low","ms":0}

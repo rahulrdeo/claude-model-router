@@ -34,6 +34,16 @@ export type Tokens = {
   cache_creation_input_tokens?: number | null
 }
 
+/** The four token counts of one turn, and their total (what the session percentage is built from, before weighting). */
+export function tokenTotals(t: Tokens | null | undefined) {
+  if (!t) return null
+  const input = t.input_tokens ?? 0
+  const output = t.output_tokens ?? 0
+  const cacheRead = t.cache_read_input_tokens ?? 0
+  const cacheWrite = t.cache_creation_input_tokens ?? 0
+  return { input, output, cacheRead, cacheWrite, total: input + output + cacheRead + cacheWrite }
+}
+
 /** What these tokens cost on this model, in dollars; null when the model has no price. */
 export function priceOf(t: Tokens | null | undefined, model: string | undefined, prices: Record<Family, Price>): number | null {
   const f = familyOf(model)

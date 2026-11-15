@@ -6,7 +6,7 @@ import type { On } from 'claude-code'
 
 import { decideAgentModel, parseAgentPick } from '../hooks/extras-core'
 import { DEFAULT_CONFIG, mergeConfig, parseRouteCommand } from '../hooks/router-core'
-import { addItem, emptyTotals, familyOf, insteadOfTokens, mergePrices, netSaved, priceOf, savedShare, usd, DEFAULT_PRICES } from '../hooks/savings-core'
+import { addItem, emptyTotals, familyOf, insteadOfTokens, mergePrices, netSaved, priceOf, savedShare, tokenTotals, usd, DEFAULT_PRICES } from '../hooks/savings-core'
 
 const cfg = DEFAULT_CONFIG
 
@@ -187,4 +187,22 @@ test('the cache band shows what routing saved this session, once a turn is price
   const ui = await $.ui.mount(band as never)
   expect((await ui.find({ type: 'Text', text: /saved \$0\.030 this session/ }))).toBeTruthy()
   await ui.unmount()
+})
+
+test('tokenTotals adds the four counts of a turn, and is null without usage', () => {
+  expect(tokenTotals(null)).toBeNull()
+  expect(tokenTotals({ input_tokens: 10, output_tokens: 20, cache_read_input_tokens: 300, cache_creation_input_tokens: 4000 })).toEqual({
+    input: 10,
+    output: 20,
+    cacheRead: 300,
+    cacheWrite: 4000,
+    total: 4330,
+  })
+  expect(tokenTotals({ output_tokens: null })?.total).toBe(0)
+})
+
+test('the warning threshold is read from the config and defaults to 150,000 tokens', () => {
+  expect(DEFAULT_CONFIG.handoff.warnAtTokens).toBe(150000)
+  expect(mergeConfig({ handoff: { warnAtTokens: 0 } }).config.handoff.warnAtTokens).toBe(0)
+  expect(mergeConfig({ handoff: { warnAtTokens: 'many' } }).warnings.length).toBe(1)
 })
